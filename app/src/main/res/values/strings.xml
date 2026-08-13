@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AodChange</string>
+    <string name="module_desc">万象息屏 AOD 完全自定义，复刻锁屏通知布局</string>
+</resources>

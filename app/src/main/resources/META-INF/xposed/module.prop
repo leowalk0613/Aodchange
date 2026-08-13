@@ -1,0 +1,8 @@
+id=com.leowalk.aodchange
+name=AOD锁屏实时刷新增强
+version=1.0
+versionCode=1
+author=LeoWalk
+description=增强MIUI AOD功能，提供精确到秒的时钟刷新、歌词显示等实时功能
+minApiVersion=102
+targetApiVersion=102

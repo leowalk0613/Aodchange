@@ -1,0 +1,33 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.leowalk.aodchange'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.leowalk.aodchange'
+        minSdk 31
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_11
+        targetCompatibility JavaVersion.VERSION_11
+    }
+}
+
+dependencies {
+    compileOnly files('libs/xposed-api.jar')
+    implementation files('libs/lunar-java.jar')
+    implementation 'com.google.android.material:material:1.12.0'
+}
