@@ -35,8 +35,8 @@
 
 ### 安装要求
 - Root 权限
-- LSPosed 框架
-- MIUI 系统
+- LSPosed 框架（v2.1.0，API 102）
+- Xiaomi HyperOS 3.0（验证版本：Xiaomi HyperOS 3.0.303.0，Android 16）
 
 ### 作用域配置
 - `com.android.systemui`
