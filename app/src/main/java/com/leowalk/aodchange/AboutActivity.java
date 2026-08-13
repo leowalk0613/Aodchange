@@ -1,6 +1,8 @@
 package com.leowalk.aodchange;
 
+import android.content.ComponentName;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Bundle;
 import android.view.Gravity;
@@ -44,6 +46,8 @@ public class AboutActivity extends AppCompatActivity {
         info.addView(addInfoRow("版本号", version()));
         info.addView(M3.clickRow(this, "项目地址", PROJECT_URL,
                 v -> startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(PROJECT_URL)))));
+        info.addView(M3.switchRow(this, "隐藏桌面图标", "开启后桌面不再显示应用图标，可通过重新安装或 ADB 命令恢复",
+                !isLauncherEnabled(), v -> toggleLauncher()));
         content.addView(M3.card(this, info));
 
         sv.addView(content);
@@ -83,5 +87,25 @@ public class AboutActivity extends AppCompatActivity {
         rlp.bottomMargin = M3.dp(this, 8);
         row.setLayoutParams(rlp);
         return row;
+    }
+
+    private ComponentName launcherComponent() {
+        return new ComponentName(this, "com.leowalk.aodchange.LauncherAlias");
+    }
+
+    private boolean isLauncherEnabled() {
+        int state = getPackageManager().getComponentEnabledSetting(launcherComponent());
+        return state != PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+                && state != PackageManager.COMPONENT_ENABLED_STATE_DISABLED_USER;
+    }
+
+    private void toggleLauncher() {
+        PackageManager pm = getPackageManager();
+        ComponentName cn = launcherComponent();
+        boolean currentlyEnabled = isLauncherEnabled();
+        int newState = currentlyEnabled
+                ? PackageManager.COMPONENT_ENABLED_STATE_DISABLED
+                : PackageManager.COMPONENT_ENABLED_STATE_ENABLED;
+        pm.setComponentEnabledSetting(cn, newState, PackageManager.DONT_KILL_APP);
     }
 }
