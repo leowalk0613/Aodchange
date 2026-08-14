@@ -1831,6 +1831,9 @@ public class LyricHook {
             if (com.leowalk.aodchange.SettingsHelper.get(sRoot.getContext(), "lyric_monet", false)) {
                 accent = sMonetInfoColor1 != 0 ? sMonetInfoColor1 : accent;
             }
+            // 标题取色：与标题文字颜色一致（应用歌曲信息卡片的自定义字体色）
+            int titleFontColor = com.leowalk.aodchange.CardRenderer.textColor(
+                    sRoot.getContext(), com.leowalk.aodchange.CardStyle.P_SONG, accent);
             // 图标内容（与位置无关，两个图标共用同一 drawable�?
             // 切歌/AODView 重建�?iconKey 可能相同�?drawable 为空（新 View），需强制重设
             // 两个图标各自的自定义取色（未开启自定义则沿用专辑主色）
@@ -1840,11 +1843,11 @@ public class LyricHook {
             boolean titleCustom = "custom".equals(titleMode);
             boolean albumCustom = "custom".equals(albumMode);
             // 自动取色：按专辑主色（入参 color 即媒体元数据的专辑主色）；无专辑主色时沿用歌词强调色
-            int autoTint = color != 0 ? color : accent;
+            int albumAutoTint = color != 0 ? color : accent;
             int titleTint = titleCustom
-                    ? com.leowalk.aodchange.SettingsHelper.getInt(ctx, "title_icon_title_color", 0xFFFFFF) : autoTint;
+                    ? com.leowalk.aodchange.SettingsHelper.getInt(ctx, "title_icon_title_color", 0xFFFFFF) : titleFontColor;
             int albumTint = albumCustom
-                    ? com.leowalk.aodchange.SettingsHelper.getInt(ctx, "title_icon_albumart_color", 0xFFFFFF) : autoTint;
+                    ? com.leowalk.aodchange.SettingsHelper.getInt(ctx, "title_icon_albumart_color", 0xFFFFFF) : albumAutoTint;
 
             String iconKey = pkg + "|" + titleTint + "|" + albumTint;
             boolean needDrawable = !iconKey.equals(sAppIconKey)
