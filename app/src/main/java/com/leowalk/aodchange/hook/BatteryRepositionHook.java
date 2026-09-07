@@ -12,6 +12,8 @@ import io.github.libxposed.api.XposedInterfaceWrapper;
 
 public class BatteryRepositionHook {
 
+    private static final java.util.Set<android.widget.TextView> sPercentWatched = new java.util.HashSet<>();
+
     public static void init(XposedInterfaceWrapper xiw, ClassLoader cl) {
         try {
             Class<?> av = Class.forName("com.miui.aod.AODView", false, cl);
@@ -19,9 +21,12 @@ public class BatteryRepositionHook {
             xiw.hook(hm).intercept(chain -> {
                 chain.proceed();
             ViewGroup root = (ViewGroup) chain.getThisObject();
-            if (com.leowalk.aodchange.SettingsHelper.get(root.getContext(), "battery_reposition", true)) {
-                move(root);
-            }
+            // 指纹过渡中延迟执行，避免与 system_server 显示/亮度/窗口重排高峰碰撞
+            com.leowalk.aodchange.hook.ElementSyncHook.deferDuringFingerprint(() -> {
+                if (com.leowalk.aodchange.SettingsHelper.get(root.getContext(), "battery_reposition", true)) {
+                    move(root);
+                }
+            });
             return null;
             });
         } catch (Exception ignored) {}
@@ -81,8 +86,40 @@ public class BatteryRepositionHook {
                 android.widget.TextView tv = (android.widget.TextView) text;
                 tv.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
                 tv.getPaint().setFakeBoldText(true);
+                // 百分号缩小为数字的一半（系统更新文本后重新应用）
+                // 只注册一次监听器，避免 handleUpdateView 反复触发时叠加
+                if (sPercentWatched.add(tv)) {
+                    tv.addTextChangedListener(new android.text.TextWatcher() {
+                        @Override public void beforeTextChanged(CharSequence s, int st, int c, int a) {}
+                        @Override public void onTextChanged(CharSequence s, int st, int c, int a) {}
+                        @Override public void afterTextChanged(android.text.Editable e) {
+                            applyPercentHalf(tv);
+                        }
+                    });
+                }
+                applyPercentHalf(tv);
             }
         } catch (Exception ignored) {}
+    }
+
+    private static boolean sPercentApplying = false;
+
+    private static void applyPercentHalf(android.widget.TextView tv) {
+        try {
+            if (sPercentApplying) return;
+            String t = tv.getText().toString();
+            int idx = t.indexOf('%');
+            if (idx < 0) return;
+            sPercentApplying = true;
+            try {
+                android.text.SpannableString ss = new android.text.SpannableString(t);
+                ss.setSpan(new android.text.style.RelativeSizeSpan(0.75f), idx, idx + 1,
+                        android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+                tv.setText(ss);
+            } finally {
+                sPercentApplying = false;
+            }
+        } catch (Throwable ignored) {}
     }
 
     private static boolean isChildOf(View child, View parent) {

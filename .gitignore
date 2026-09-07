@@ -18,3 +18,6 @@ captures/
 
 # Logs
 *.log
+
+# Decompiled reference (not project source)
+hyperos4/

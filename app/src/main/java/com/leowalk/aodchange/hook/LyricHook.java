@@ -74,6 +74,7 @@ public class LyricHook {
     private static org.json.JSONObject sCachedCtx = null;
     private static String sLastStyleKey = "";
     private static String sLastSongKey2 = "";
+    private static volatile boolean sLastMultiActive = false;
     private static int sCurRow = -1;
     private static final java.util.List<Integer> sRowHeights = new java.util.ArrayList<>();
 
@@ -93,12 +94,18 @@ public class LyricHook {
                 com.leowalk.aodchange.SettingsHelper.invalidate();
                 CustomContentHook.setCustomRefreshPending(true);
                 registerObserverOnce();
-                setup(sRoot);
-                // 锁屏出现立即渲染：排到主线程队列最前（不等轮询/排队任务）
-                new Handler(Looper.getMainLooper()).postAtFrontOfQueue(() -> {
-                    try {
-                        readAndUpdate();
-                    } catch (Throwable ignored) {}
+                // setup 有守卫（首次/视图树重建才重），必须执行保证视图树完整；
+                // 指纹过渡中延迟执行，避免与 system_server 显示/亮度/窗口重排高峰碰撞
+                com.leowalk.aodchange.hook.ElementSyncHook.deferDuringFingerprint(() -> {
+                    setup(sRoot);
+                    if (!com.leowalk.aodchange.hook.ElementSyncHook.isFingerprintPressed()) {
+                        // 锁屏出现立即渲染：排到主线程队列最前（不等轮询/排队任务）
+                        new Handler(Looper.getMainLooper()).postAtFrontOfQueue(() -> {
+                            try {
+                                readAndUpdate();
+                            } catch (Throwable ignored) {}
+                        });
+                    }
                 });
                 return null;
             });
@@ -135,6 +142,7 @@ public class LyricHook {
         sLastSongKey = "";
         sLastSongKey2 = "";
         sLastStyleKey = "";
+        sLastMultiActive = false;
     }
 
     /** 半透明白色圆角矩形线框（自适应宽高） */
@@ -377,6 +385,18 @@ public class LyricHook {
         root.addView(sMask, maskLp);
         ElementSyncHook.register(sMask);
         ElementSyncHook.register(sNotifIconRow);
+        // AOD 可见后：applyVisibility(true) 把 sMask 设为 VISIBLE，但暂停/无歌词时应为 GONE
+        ElementSyncHook.setOnAodVisible(() -> {
+            if (!sLastMultiActive) {
+                if (sMask != null && sMask.getVisibility() == View.VISIBLE) {
+                    sMask.animate().cancel();
+                    sMask.setVisibility(View.GONE);
+                }
+                if (sNotifIconRow != null && sNotifIconRow.getVisibility() == View.VISIBLE) {
+                    sNotifIconRow.setVisibility(View.GONE);
+                }
+            }
+        });
         android.util.Log.i("AodChange", "setupMask d=" + d + " topMargin=" + maskLp.topMargin
                 + " bottomMargin=" + maskLp.bottomMargin
                 + " rootH=" + root.getHeight() + " rootW=" + root.getWidth()
@@ -547,7 +567,9 @@ public class LyricHook {
             @Override public void run() {
                 try {
                     readAndUpdate();
-                    new Handler(Looper.getMainLooper()).postDelayed(this, 200);
+                    // 自适应轮询间隔：解锁/亮屏/指纹过渡时无渲染需求，大幅降频减少主线程占用；
+                    // AOD 显示中保持 200ms 实时刷新歌词（不牺牲实时性）
+                    new Handler(Looper.getMainLooper()).postDelayed(this, pollInterval());
                 } catch (Throwable t) {
                     new Handler(Looper.getMainLooper()).postDelayed(this, 1000);
                 }
@@ -555,7 +577,21 @@ public class LyricHook {
         }, 500);
     }
 
+    /** 自适应轮询间隔：亮屏/指纹过渡 1000ms；AOD 显示中仅播放时 200ms 实时刷新歌词，
+     *  无媒体/暂停时歌词不会变化，降频到 1000ms 大幅减少主线程空转占用。 */
+    private static long pollInterval() {
+        if (com.leowalk.aodchange.hook.ElementSyncHook.isFingerprintPressed()) return 1000;
+        if (sRoot == null) return 500;
+        try {
+            android.os.PowerManager pm = (android.os.PowerManager) sRoot.getContext()
+                    .getSystemService(android.content.Context.POWER_SERVICE);
+            if (pm != null && pm.isInteractive()) return 1000;
+        } catch (Throwable ignored) {}
+        return sLastPlaying ? 200 : 1000;
+    }
+
     private static long sLastVersionsCheck = 0;
+    private static long sLastDiagLog = 0;
     private static String sLastLyricJson = "{}";
     private static String sLastMediaJson = "{}";
     private static volatile boolean sDataDirty = false;
@@ -590,6 +626,11 @@ public class LyricHook {
     private static void readAndUpdate() {
         try {
             if (sRoot == null) return;
+            // 屏幕点亮（解锁/亮屏）或指纹按压中跳过重活，避免与解锁关键路径竞争导致卡顿
+            android.os.PowerManager pm = (android.os.PowerManager) sRoot.getContext()
+                    .getSystemService(android.content.Context.POWER_SERVICE);
+            if (pm != null && pm.isInteractive()) return;
+            if (com.leowalk.aodchange.hook.ElementSyncHook.isFingerprintPressed()) return;
 
             // 事件驱动：数据变化（ContentObserver 置 dirty）或锁屏 pending 立即处理；
             // 无变化时 5s 兜底检查一次（防丢事件），其余轮询走内存快路径（本地，无 binder）
@@ -621,6 +662,17 @@ public class LyricHook {
             } catch (Throwable ignored) {}
 
             try {
+                long diagNow = android.os.SystemClock.elapsedRealtime();
+                if (diagNow - sLastDiagLog > 5000) {
+                    sLastDiagLog = diagNow;
+                    android.util.Log.i("AodChange", "DIAG heavy dirty=" + sDataDirty
+                            + " pending=" + CustomContentHook.isCustomRefreshPending()
+                            + " vM=" + newVMedia + "/" + sVMedia
+                            + " vL=" + newVLyric + "/" + sVLyric
+                            + " vFd=" + newVLyricFd + "/" + sVLyricFd
+                            + " vS=" + newVSettings + "/" + sVSettings
+                            + " vC=" + newVCalendar + "/" + sVCalendar);
+                }
                 doReadAndUpdate(newVMedia, newVLyric, newVLyricFd, newVSettings, newVCalendar);
             } catch (Throwable t) {
                 // 处理失败：不记录版本号，下次轮询重试
@@ -637,10 +689,19 @@ public class LyricHook {
             if (linesArr == null || linesArr.length() == 0) return;
             int advance = com.leowalk.aodchange.SettingsHelper.getInt(sRoot.getContext(), "lyric_advance_ms", 200);
             long pos = getMediaPosition() + advance;
+            // 二分查找当前行（lines 按 tm 升序），替代线性遍历降低每 200ms 的 CPU 占用
             int curIdx = -1;
-            for (int i = 0; i < linesArr.length(); i++) {
-                org.json.JSONObject o = linesArr.optJSONObject(i);
-                if (o != null && o.optLong("tm", Long.MAX_VALUE) <= pos) curIdx = i;
+            int lo = 0, hi = linesArr.length() - 1;
+            while (lo <= hi) {
+                int mid = (lo + hi) >>> 1;
+                org.json.JSONObject o = linesArr.optJSONObject(mid);
+                long tm = o != null ? o.optLong("tm", Long.MAX_VALUE) : Long.MAX_VALUE;
+                if (tm <= pos) {
+                    curIdx = mid;
+                    lo = mid + 1;
+                } else {
+                    hi = mid - 1;
+                }
             }
             int oldIdx = sCachedCtx.optInt("idx", -1);
             if (curIdx == oldIdx) return; // 当前行未�?
@@ -738,6 +799,7 @@ public class LyricHook {
 
             org.json.JSONObject mo = new org.json.JSONObject(mjson);
             playing = mo.optInt("p", 0) != 0;
+            sLastPlaying = playing;
             title = mo.optString("t", "");
             artist = mo.optString("a", "");
             String album = mo.optString("al", "");
@@ -805,6 +867,7 @@ public class LyricHook {
             // 无歌词文本(noLyric)时仅前奏(idx<0)激活，避免残留旧歌词 ctx 的文字残留
             boolean multiActive = multiLineEnabled && ctx != null && playing && matchSong
                     && (!noLyric || ctx.optInt("idx", -1) < 0);
+            sLastMultiActive = multiActive;
 
             // 切歌检测：歌曲变化时强制重建（重置缓存索引并清空多行列表，
             // 否则新歌前奏 idx=-1 会命中缓存显示旧歌词�?
@@ -962,8 +1025,10 @@ public class LyricHook {
             boolean mediaEmpty = "{}".equals(mjson);
             if (mediaEmpty) {
                 // 自定义内容（日历/文字）不走实时更新：锁屏出现（pending）或
-                // 数据版本变化（日历/设置）时才更新，其余轮询空转
+                // 数据版本变化（日历/设置）时才更新，其余轮询空转；
+                // 播放中清除了 pending，故媒体刚变空（oldVMedia!=newVMedia）也要刷新
                 if (CustomContentHook.isCustomRefreshPending()
+                        || oldVMedia != newVMedia
                         || oldVCalendar != newVCalendar || oldVSettings != newVSettings) {
                     CustomContentHook.setCustomRefreshPending(false);
                     sVCalendar = newVCalendar;
@@ -979,6 +1044,9 @@ public class LyricHook {
             if (lyricEmpty) { CustomContentHook.applyCustomOrPlaceholder(); return; }
             // 有媒体数据（播放或暂停）：不显示自定义组件
             CustomContentHook.showMedia();
+            // 播放中自定义组件隐藏，无需再强制走重活路径；清理 pending，
+            // 否则每次锁屏置位后永远不清除，导致 readAndUpdate 每 200ms 全量重读
+            CustomContentHook.setCustomRefreshPending(false);
 
             final String fSong = title;
             final String fArtist = artist;
@@ -1047,10 +1115,21 @@ public class LyricHook {
         } catch (Exception ignored) {}
     }
 
-    /** 从当前媒体会话获取播放位置（ms�?*/
+    /** 播放位置缓存：播放器约 5s 才推一次 PlaybackState，缓存后用匀速外推，
+     *  避免每 200ms 遍历控制器做 binder 调用（getPlaybackState）。 */
+    private static long sPosBase = 0;
+    private static long sPosBaseTime = 0;
+    /** 当前是否有音乐在播：驱动轮询频率（播放中 200ms 实时刷新，否则 1000ms） */
+    private static volatile boolean sLastPlaying = false;
+
     private static long getMediaPosition() {
         try {
             if (sRoot == null) return 0;
+            long now = android.os.SystemClock.elapsedRealtime();
+            // 缓存 2s 内直接外推（播放器上报周期约 5s，外推误差可忽略），大幅减少 binder 调用
+            if (sPosBaseTime > 0 && now - sPosBaseTime < 2000) {
+                return sPosBase + (now - sPosBaseTime);
+            }
             java.util.List<android.media.session.MediaController> cs = getControllers();
             if (cs == null) return 0;
             for (android.media.session.MediaController c : cs) {
@@ -1066,13 +1145,19 @@ public class LyricHook {
                         // 用 lastPositionUpdateTime 外推实时位置，避免快句（<1s/句）整段跳行
                         long lastT = st.getLastPositionUpdateTime();
                         if (lastT > 0) {
-                            long delta = android.os.SystemClock.elapsedRealtime() - lastT;
+                            long delta = now - lastT;
                             if (delta > 0) pos += delta;
                         }
+                        sPosBase = pos;
+                        sPosBaseTime = now;
+                        sLastPlaying = true;
                         return pos;
                     }
                 }
             }
+            // 无播放中的控制器（暂停/停止/切歌）：降频轮询，避免主线程空转
+            sLastPlaying = false;
+            sPosBaseTime = 0;
         } catch (Throwable ignored) {}
         return 0;
     }
@@ -1086,10 +1171,10 @@ public class LyricHook {
             int rowG;
             if ("left".equals(gravity)) {
                 g = Gravity.LEFT;
-                rowG = Gravity.LEFT;
+                rowG = Gravity.LEFT | Gravity.CENTER_VERTICAL;
             } else if ("right".equals(gravity)) {
                 g = Gravity.RIGHT;
-                rowG = Gravity.RIGHT;
+                rowG = Gravity.RIGHT | Gravity.CENTER_VERTICAL;
             } else if ("center".equals(gravity)) {
                 g = Gravity.CENTER_HORIZONTAL;
                 rowG = Gravity.CENTER;
@@ -1672,15 +1757,27 @@ public class LyricHook {
         } catch (Throwable ignored) { return ""; }
     }
 
+    private static String sNotifIconKey = "";
+
     private static void updateNotifIconRow() {
         try {
             if (sNotifIconRow == null) return;
             boolean enabled = com.leowalk.aodchange.SettingsHelper.get(sRoot.getContext(), "multi_show_notif_icons", false);
             if (!enabled) {
                 sNotifIconRow.setVisibility(View.GONE);
+                sNotifIconKey = "";
                 return;
             }
             String json = readProvider("get");
+            // 缓存指纹：数据 + 可见性 + 下边距，未变时跳过（避免每 200ms binder/图标加载）
+            String key = enabled + "|" + json + "|"
+                    + com.leowalk.aodchange.SettingsHelper.getInt(sRoot.getContext(), "multi_bottom_margin", 165)
+                    + "|" + com.leowalk.aodchange.SettingsHelper.getString(sRoot.getContext(), "multi_icon_row_gravity", "left");
+            if (key.equals(sNotifIconKey) && sNotifIconRow.getChildCount() > 0) {
+                if (sNotifIconRow.getVisibility() != View.VISIBLE) sNotifIconRow.setVisibility(View.VISIBLE);
+                return;
+            }
+            sNotifIconKey = key;
             java.util.List<org.json.JSONObject> notifs = new java.util.ArrayList<>();
             if (!json.isEmpty() && !"[]".equals(json)) {
                 org.json.JSONArray arr = new org.json.JSONArray(json);

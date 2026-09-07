@@ -56,19 +56,23 @@ public class NotificationCardHook {
             chain.proceed();
             try {
                 ViewGroup root = (ViewGroup) chain.getThisObject();
-                setup(root);
-                // 解锁/AOD 过渡瞬间 system_server 有 binder 高峰：
-                // 延迟 200ms 执行刷新，避免与系统事务风暴叠加，且 1s 节流防高频
-                long now = android.os.SystemClock.elapsedRealtime();
-                if (now - sLastRefresh >= 1000) {
-                    sLastRefresh = now;
-                    final ViewGroup fRoot = root;
-                    new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
-                        try {
-                            refresh(fRoot);
-                        } catch (Throwable ignored) {}
-                    }, 200);
-                }
+                // setup 有守卫，必须执行保证视图树完整；
+                // 指纹过渡中延迟执行，避免与 system_server 显示/亮度/窗口重排高峰碰撞
+                com.leowalk.aodchange.hook.ElementSyncHook.deferDuringFingerprint(() -> {
+                    setup(root);
+                    // 解锁/AOD 过渡瞬间 system_server 有 binder 高峰：
+                    // 延迟 200ms 执行刷新，避免与系统事务风暴叠加，且 1s 节流防高频
+                    long now = android.os.SystemClock.elapsedRealtime();
+                    if (now - sLastRefresh >= 1000) {
+                        sLastRefresh = now;
+                        final ViewGroup fRoot = root;
+                        new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                            try {
+                                refresh(fRoot);
+                            } catch (Throwable ignored) {}
+                        }, 200);
+                    }
+                });
             } catch (Throwable t) {
                 android.util.Log.w("AodChange", "handleUpdateView refresh fail", t);
             }

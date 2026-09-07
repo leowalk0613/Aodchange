@@ -116,9 +116,16 @@ public class CustomContentHook {
             String todayStr = dayFmt.format(new java.util.Date());
             String key = calendarEnabled + "|" + cjson + "|" + placeholderEnabled + "|" + text
                     + "|" + showFestival + "|" + todayStr + "|" + festivalKey(festivals);
-            // 内容未变：保持现有视图（视图重建时 resetCaches 已清空 key，新实例不会误命中）
+            // 内容未变：保持现有视图（视图重建时 resetCaches 已清空 key，新实例不会误命中）；
+            // 但媒体播放时 showMedia 已隐藏占位，需重新显示（否则关闭音乐软件后自定义组件消失）
             if (key.equals(sLastCustomKey)) {
                 LyricHook.hideMediaViews();
+                if (sPlaceholder != null && sPlaceholder.getChildCount() > 0 && !sShowingPlaceholder) {
+                    sShowingPlaceholder = true;
+                    sPlaceholder.setAlpha(0f);
+                    sPlaceholder.setVisibility(View.VISIBLE);
+                    sPlaceholder.animate().alpha(1f).setDuration(300L).start();
+                }
                 return;
             }
             sLastCustomKey = key;
@@ -245,6 +252,7 @@ public class CustomContentHook {
                 sPlaceholder.removeAllViews();
                 sPlaceholder.addView(wrap);
                 sPlaceholder.setVisibility(View.VISIBLE);
+                sShowingPlaceholder = true;
             }
             if (sCalendar != null) sCalendar.setVisibility(View.GONE);
             LyricHook.hideMediaViews();

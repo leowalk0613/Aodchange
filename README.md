@@ -36,7 +36,7 @@
 ### 安装要求
 - Root 权限
 - LSPosed 框架（v2.1.0，API 102）
-- Xiaomi HyperOS 3.0（验证版本：Xiaomi HyperOS 3.0.303.0，Android 16）
+- Xiaomi HyperOS 3.0 / 4.0（验证：HyperOS 3.0.303.0 Android 16；兼容 HyperOS 4 插件/指纹/亮度 API 差异）
 
 ### 作用域配置
 - `com.android.systemui`
@@ -86,6 +86,12 @@ app/src/main/java/com/leowalk/aodchange/
 ```
 
 ## 版本历史
+
+### v1.2
+- 兼容 HyperOS 3 / 4：指纹信号改走 `DozeHost.fireFingerprintPressed`；插件字段与 Doze 亮度超时字段双路径适配。
+
+### v1.1
+- release 签名与混淆、隐藏桌面图标、LyricFocus 版本说明、关于页等。
 
 ### v1.0
 - 初始版本：组件卡片样式、歌词样式、自定义文字/日历日程、通知卡片管理、音乐应用白名单、关于页。

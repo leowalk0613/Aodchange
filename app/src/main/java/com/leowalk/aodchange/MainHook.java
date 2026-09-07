@@ -13,7 +13,6 @@ public class MainHook extends XposedModule {
 
     public static final String PKG_AOD = "com.miui.aod";
     public static final String PKG_SYSUI = "com.android.systemui";
-    public static final String PKG_SYSTEM = "system";
 
     @FunctionalInterface
     private interface HookInit {
@@ -21,13 +20,14 @@ public class MainHook extends XposedModule {
     }
 
     private boolean isTarget(String pkg) {
-        return PKG_AOD.equals(pkg) || PKG_SYSUI.equals(pkg) || PKG_SYSTEM.equals(pkg) || "android".equals(pkg)
+        return PKG_AOD.equals(pkg) || PKG_SYSUI.equals(pkg)
                 || "com.mi.health".equals(pkg);
     }
 
     @Override
     public void onPackageReady(PackageReadyParam param) {
         String pkg = param.getPackageName();
+        android.util.Log.i("AodChange", "onPackageReady: " + pkg);
         if (!isTarget(pkg)) return;
 
         ClassLoader cl = param.getClassLoader();
@@ -45,6 +45,11 @@ public class MainHook extends XposedModule {
     }
 
     private void initHook(String name, HookInit initFn) {
-        try { initFn.run(); } catch (Throwable ignored) {}
+        try {
+            initFn.run();
+            android.util.Log.i("AodChange", name + " initialized OK");
+        } catch (Throwable t) {
+            android.util.Log.w("AodChange", name + " init fail", t);
+        }
     }
 }

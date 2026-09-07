@@ -13,6 +13,45 @@ public class ElementSyncHook {
     private static final List<View> sElements = new ArrayList<>();
     private static volatile boolean sAodVisible = true;
     private static volatile boolean sPaused = false;
+    private static volatile boolean sFingerprintPressed = false;
+    private static final android.os.Handler sMainHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private static final List<Runnable> sDeferredWork = new ArrayList<>();
+    private static Runnable sOnAodVisible = null;
+
+    /** AOD 从隐藏变为可见后调用：让 LyricHook 重新评估 mask 显隐，避免暂停时残留 */
+    public static void setOnAodVisible(Runnable r) { sOnAodVisible = r; }
+
+    /**
+     * 指纹过渡（按压→解锁）中提交的工作延迟到过渡结束后执行。
+     * 过渡瞬间 system_server 有显示/亮度/窗口重排的高峰（易触发框架死锁），
+     * 模块的视图构建/渲染/binder 调用一律避开该窗口；非过渡时立即执行。
+     */
+    public static void deferDuringFingerprint(Runnable r) {
+        if (sFingerprintPressed) {
+            synchronized (sDeferredWork) {
+                sDeferredWork.add(r);
+            }
+        } else {
+            r.run();
+        }
+    }
+
+    private static void runDeferredWork() {
+        sMainHandler.post(() -> {
+            List<Runnable> work;
+            synchronized (sDeferredWork) {
+                work = new ArrayList<>(sDeferredWork);
+                sDeferredWork.clear();
+            }
+            // 分批执行：每批最多 2 个、间隔一帧，避免解锁瞬间所有延迟任务突发占用主线程
+            for (int i = 0; i < work.size(); i++) {
+                final Runnable r = work.get(i);
+                sMainHandler.postDelayed(() -> {
+                    try { r.run(); } catch (Throwable ignored) {}
+                }, (i / 2) * 16L);
+            }
+        });
+    }
 
     // 暂停/恢复元素动画（日历/自定义显示时暂停，避免时钟同步闪烁）
     public static void setPaused(boolean p) {
@@ -21,6 +60,11 @@ public class ElementSyncHook {
 
     public static boolean isAodVisible() {
         return sAodVisible;
+    }
+
+    /** 指纹正在按压中（同步标志，供 handleUpdateView 等 hook 跳过重活） */
+    public static boolean isFingerprintPressed() {
+        return sFingerprintPressed;
     }
 
     public static void register(View v) {
@@ -45,7 +89,10 @@ public class ElementSyncHook {
             Method m1 = cls.getDeclaredMethod("setAodVisibility", boolean.class);
             xiw.hook(m1).intercept(chain -> {
                 try {
-                    applyVisibility((boolean) chain.getArg(0));
+                    boolean visible = (boolean) chain.getArg(0);
+                    sMainHandler.post(() -> {
+                        try { applyVisibility(visible); } catch (Throwable ignored) {}
+                    });
                 } catch (Throwable t) {
                     android.util.Log.w("AodChange", "setAodVisibility(1) sync fail", t);
                 }
@@ -61,7 +108,10 @@ public class ElementSyncHook {
             if (m2 != null) {
                 xiw.hook(m2).intercept(chain -> {
                     try {
-                        applyVisibility((boolean) chain.getArg(0));
+                        boolean visible = (boolean) chain.getArg(0);
+                        sMainHandler.post(() -> {
+                            try { applyVisibility(visible); } catch (Throwable ignored) {}
+                        });
                     } catch (Throwable t) {
                         android.util.Log.w("AodChange", "setAodVisibility(3) sync fail", t);
                     }
@@ -74,25 +124,67 @@ public class ElementSyncHook {
         }
     }
 
+    private static final Runnable sClearFingerprintRunnable = () -> {
+        sFingerprintPressed = false;
+        // 释放回调可能丢失（解锁成功直接进桌面）：兜底执行延迟工作 + 恢复元素显隐
+        runDeferredWork();
+        sMainHandler.post(() -> {
+            try { applyVisibilityFp(true); } catch (Throwable ignored) {}
+        });
+    };
+
     private static void hookFingerprintClock(XposedInterfaceWrapper xiw, ClassLoader cl) {
+        // OS3/OS4 均有 DozeHost.fireFingerprintPressed（匿名内部类编号 $1/$2 不一致，不依赖）
         try {
-            Class<?> dss = Class.forName("com.miui.aod.doze.DozeScreenState$1", false, cl);
-            Method m = dss.getDeclaredMethod("onFingerprintPressed", boolean.class, boolean.class);
+            Class<?> host = Class.forName("com.miui.aod.DozeHost", false, cl);
+            Method m = host.getDeclaredMethod("fireFingerprintPressed", boolean.class, boolean.class);
             xiw.hook(m).intercept(chain -> {
-                try {
-                    Object a0 = chain.getArg(0);
-                    android.util.Log.i("AodChange", "FP hook arg0=" + a0 + " cls=" + (a0 == null ? "null" : a0.getClass().getName()));
-                    boolean pressing = Boolean.TRUE.equals(a0);
-                    android.util.Log.i("AodChange", "FP pressing=" + pressing);
-                    applyVisibilityFp(!pressing);
-                } catch (Throwable t) {
-                    android.util.Log.w("AodChange", "fingerprint sync fail", t);
-                }
+                onFingerprintSignal(Boolean.TRUE.equals(chain.getArg(0)));
                 return chain.proceed();
             });
-            android.util.Log.i("AodChange", "Hooked DozeScreenState.onFingerprintPressed");
+            android.util.Log.i("AodChange", "Hooked DozeHost.fireFingerprintPressed");
+            return;
         } catch (Throwable e) {
-            android.util.Log.w("AodChange", "hookFingerprintClock fail: " + e);
+            android.util.Log.w("AodChange", "fireFingerprintPressed hook fail, fallback: " + e);
+        }
+        // 兜底：按方法探测 DozeScreenState 内部类（OS3=$1，OS4=$2）
+        for (String name : new String[]{
+                "com.miui.aod.doze.DozeScreenState$1",
+                "com.miui.aod.doze.DozeScreenState$2",
+                "com.miui.aod.doze.DozeScreenState$3"}) {
+            try {
+                Class<?> dss = Class.forName(name, false, cl);
+                Method m = dss.getDeclaredMethod("onFingerprintPressed", boolean.class, boolean.class);
+                xiw.hook(m).intercept(chain -> {
+                    onFingerprintSignal(Boolean.TRUE.equals(chain.getArg(0)));
+                    return chain.proceed();
+                });
+                android.util.Log.i("AodChange", "Hooked " + name + ".onFingerprintPressed");
+                return;
+            } catch (Throwable ignored) {}
+        }
+        android.util.Log.w("AodChange", "hookFingerprintClock: no fingerprint callback found");
+    }
+
+    private static void onFingerprintSignal(boolean pressing) {
+        try {
+            // 同步置位标志（轻量），供 handleUpdateView 跳过重活；
+            // 显隐同步仍延迟到下一帧，避免阻塞解锁关键路径
+            sFingerprintPressed = pressing;
+            if (pressing) {
+                // 兜底：2s 后若未收到释放回调则清除标志，避免永久跳过渲染
+                sMainHandler.removeCallbacks(sClearFingerprintRunnable);
+                sMainHandler.postDelayed(sClearFingerprintRunnable, 2000);
+            } else {
+                sMainHandler.removeCallbacks(sClearFingerprintRunnable);
+                // 释放：执行过渡期间延迟的视图构建/渲染
+                runDeferredWork();
+            }
+            sMainHandler.post(() -> {
+                try { applyVisibilityFp(!pressing); } catch (Throwable ignored) {}
+            });
+        } catch (Throwable t) {
+            android.util.Log.w("AodChange", "fingerprint sync fail", t);
         }
     }
 
@@ -129,9 +221,10 @@ public class ElementSyncHook {
             xiw.hook(m).intercept(chain -> {
                 try {
                     boolean visible = (boolean) chain.getArg(0);
-                    android.util.Log.i("AodChange", "DozeHost.setClockViewVisible called visible=" + visible);
                     if (visible) {
-                        applyVisibility(true);
+                        sMainHandler.post(() -> {
+                            try { applyVisibility(true); } catch (Throwable ignored) {}
+                        });
                     }
                 } catch (Throwable t) {
                     android.util.Log.w("AodChange", "setClockViewVisible sync fail", t);
@@ -157,6 +250,12 @@ public class ElementSyncHook {
                 }
             }
         }
+        // AOD 变为可见后：通知 LyricHook 重新评估 mask 显隐
+        // applyVisibility(true) 会把所有注册元素设为 VISIBLE，包括 sMask；
+        // 但暂停时 sMask 应为 GONE，此处回调让它立即修正，避免残留
+        if (visible && sOnAodVisible != null) {
+            try { sOnAodVisible.run(); } catch (Throwable ignored) {}
+        }
     }
 
     // 指纹触发的显隐：始终生效（不受 paused 影响）
@@ -172,6 +271,9 @@ public class ElementSyncHook {
                     android.util.Log.w("AodChange", "ElementSync FP fail", t);
                 }
             }
+        }
+        if (visible && sOnAodVisible != null) {
+            try { sOnAodVisible.run(); } catch (Throwable ignored) {}
         }
     }
 
