@@ -770,16 +770,49 @@ public class LyricHook {
                         try {
                             org.json.JSONObject old = new org.json.JSONObject(sLastLyricJson);
                             org.json.JSONObject neu = new org.json.JSONObject(j);
-                            boolean emptyPush = !neu.has("l") && !neu.has("s")
+                            // LyricFocus 切歌 clear：l/s 为空、带新歌 title、loading=true、无 ctx。
+                            // 不可用 has("l") 判断——空字符串仍有键，否则会把旧 ctx 合并回来。
+                            boolean loading = neu.optBoolean("loading", false);
+                            boolean noLyricContent = neu.optString("l", "").trim().isEmpty()
+                                    && neu.optString("s", "").trim().isEmpty()
+                                    && neu.isNull("ctx");
+                            boolean legacyEmptyPush = !neu.has("l") && !neu.has("s")
                                     && !neu.has("title") && !neu.has("ctx");
-                            if (emptyPush) {
-                                // 切歌清空推送：彻底清除残留歌词（含 ctx/缓存），等新歌全量到达
-                                sLastLyricJson = "{}";
+                            boolean clearOrLoading = loading || legacyEmptyPush
+                                    || (noLyricContent && neu.optString("title", "").trim().isEmpty());
+                            if (clearOrLoading) {
+                                // 切歌清空/加载中：丢掉旧 ctx，保留 title 便于对曲，等新歌全量
+                                sLastLyricJson = loading || !neu.optString("title", "").trim().isEmpty()
+                                        ? neu.toString() : "{}";
                                 sCachedCtx = null;
                                 if (sMultiLine != null) sMultiLine.removeAllViews();
                                 sMultiLineViews.clear();
+                            } else if (noLyricContent) {
+                                // 弱包空 l/s 无 ctx：仅同曲才合并旧时间轴；异曲禁止合并
+                                String oldTitle = old.optString("title", "").trim();
+                                String newTitle = neu.optString("title", "").trim();
+                                boolean sameSong = !oldTitle.isEmpty() && !newTitle.isEmpty()
+                                        && (oldTitle.equals(newTitle)
+                                        || oldTitle.replace(" ", "").contains(newTitle.replace(" ", ""))
+                                        || newTitle.replace(" ", "").contains(oldTitle.replace(" ", "")));
+                                if (sameSong && old.has("ctx")) {
+                                    neu.put("ctx", old.get("ctx"));
+                                } else {
+                                    sCachedCtx = null;
+                                    if (sMultiLine != null) sMultiLine.removeAllViews();
+                                    sMultiLineViews.clear();
+                                }
+                                sLastLyricJson = neu.toString();
                             } else if (!neu.has("ctx") && old.has("ctx")) {
-                                neu.put("ctx", old.get("ctx"));
+                                String oldTitle = old.optString("title", "").trim();
+                                String newTitle = neu.optString("title", "").trim();
+                                boolean sameSong = !oldTitle.isEmpty() && !newTitle.isEmpty()
+                                        && (oldTitle.equals(newTitle)
+                                        || oldTitle.replace(" ", "").contains(newTitle.replace(" ", ""))
+                                        || newTitle.replace(" ", "").contains(oldTitle.replace(" ", "")));
+                                if (sameSong) {
+                                    neu.put("ctx", old.get("ctx"));
+                                }
                                 sLastLyricJson = neu.toString();
                             } else {
                                 sLastLyricJson = neu.toString();
@@ -818,10 +851,21 @@ public class LyricHook {
             String lTitle = lo.optString("title", "");
             String lArtist = lo.optString("artist", "");
             org.json.JSONObject ctx = lo.optJSONObject("ctx");
-
+            boolean loading = lo.optBoolean("loading", false);
+            if (loading) {
+                // 切歌占位：强制无歌词内容，禁止沿用任何旧 ctx/多行
+                lyric = "";
+                sub = "";
+                ctx = null;
+                sCachedCtx = null;
+                if (sMultiLine != null) sMultiLine.removeAllViews();
+                sMultiLineViews.clear();
+            }
             // 用播放位置自行计算当前行（不依赖 LyricFocus 推送的 idx），
             // 换行响应更快，节奏快的歌不卡顿；前奏（未到第一句）�?idx=-1
-            sCachedCtx = null;
+            if (!loading) {
+                sCachedCtx = null;
+            }
             if (ctx != null && playing) {
                 org.json.JSONArray linesArr = ctx.optJSONArray("lines");
                 if (linesArr != null && linesArr.length() > 0 && linesArr.optJSONObject(0).has("tm")) {
