@@ -308,6 +308,17 @@ public class NotificationCollectorService extends NotificationListenerService {
 
     private void updateCalendarInfo() {
         try {
+            // 未授予日历权限时清空，不假定系统已授权
+            if (android.os.Build.VERSION.SDK_INT >= 23
+                    && checkSelfPermission(android.Manifest.permission.READ_CALENDAR)
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                if (!"[]".equals(sLastCalendarJson)) {
+                    sLastCalendarJson = "[]";
+                    NotificationProvider.updateCalendar("[]");
+                    android.util.Log.i("AodChange", "calendar skipped: no READ_CALENDAR");
+                }
+                return;
+            }
             long now = System.currentTimeMillis();
             // 只查未来 3 天内的日程（与渲染侧窗口一致），最近的排最前，最多 3 条
             long threeDaysEnd = now + 3L * 24 * 60 * 60 * 1000;

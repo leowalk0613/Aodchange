@@ -4,7 +4,7 @@ import android.content.Context;
 import android.graphics.Color;
 
 /**
- * 卡片样式数据类：统一管理四类卡片的背景/描边/字体颜色及宽高。
+ * 卡片样式数据类：统一管理通知/焦点/歌曲/自定义分区卡片的背景/描边/字体颜色及宽高。
  *
  * 每类卡片用独立前缀存储，常见字段：
  *   {p}_enabled      启用自定义样式（bool）
@@ -26,7 +26,10 @@ public class CardStyle {
     public static final String P_NOTIF  = "card_notif_";
     public static final String P_FOCUS  = "card_focus_";
     public static final String P_SONG   = "card_song_";
+    /** 旧统一前缀，仅作兼容回退；新设置用 P_CUSTOM_TEXT / P_CUSTOM_WIDGET */
     public static final String P_CUSTOM = "card_custom_";
+    public static final String P_CUSTOM_TEXT = "card_custom_text_";
+    public static final String P_CUSTOM_WIDGET = "card_custom_widget_";
 
     public static final String MODE_AUTO = "auto";
     public static final String MODE_CUSTOM = "custom";

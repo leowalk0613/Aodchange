@@ -5,7 +5,7 @@
 ## 功能特性
 
 ### 组件卡片样式
-对普通通知卡片、焦点通知卡片、歌曲信息卡片、自定义卡片提供统一样式自定义：
+对普通通知卡片、焦点通知卡片、歌曲信息卡片提供统一样式自定义：
 - 背景颜色（内置预设 / 自定义取色）与透明度
 - 描边颜色
 - 字体颜色（内置预设 / 自定义取色）
@@ -20,9 +20,13 @@
 - 歌词区域与歌曲信息卡片的独立显示开关
 
 ### 自定义内容
-- 自定义文字：无媒体播放时显示指定文字
-- 日历日程：无媒体播放时显示未来三天内的日程，按开始时间优先，24 小时内开始的日程高亮提醒，并支持节日/节气显示
-- 自定义文字与日历日程均支持靠左/居中/靠右排版
+无媒体播放时显示，分两个区域，卡片背景与描边分别配置：
+
+- 区域一 · 自定义文字：指定文字，最多 4 行，每行可单独取色，支持靠左/居中/靠右
+- 区域二 · 小组件：横向等宽排列，最多 4 个，可选天气、日出日落、湿度、AQI、体感、风、步数、站立、闹钟、日程
+- 日程取未来三天内最近一条，可混排节日/节气；3 天内黄色、1 天内红色。首次使用需授予日历权限
+- 闹钟读取系统下一用户闹钟（`next_alarm_clock_long`）；12 小时内黄色、1 小时内红色
+- 天气类数据来自小米天气本地缓存（`content://weather/actualWeatherData/2`）
 
 ### 通知卡片管理
 - 普通通知与焦点通知分类展示
@@ -71,7 +75,7 @@ app/src/main/java/com/leowalk/aodchange/
 ├── MainActivity.java          # 主设置页
 ├── LyricStyleActivity.java    # 歌词样式设置
 ├── CardStyleActivity.java     # 组件卡片样式设置
-├── PlaceholderActivity.java   # 自定义文字/日历日程设置
+├── PlaceholderActivity.java   # 自定义文字与小组件设置
 ├── AboutActivity.java         # 关于页
 ├── CardRenderer.java          # 卡片渲染工具
 ├── CardStyle.java             # 卡片样式数据模型
@@ -82,10 +86,16 @@ app/src/main/java/com/leowalk/aodchange/
     ├── NotificationCardHook.java
     ├── LyricHook.java
     ├── CustomContentHook.java
+    ├── LockscreenDataHelper.java
     └── ...
 ```
 
 ## 版本历史
+
+### v1.3
+- 自定义内容拆成文字区与小组件区：天气/日出日落/湿度/AQI/体感/风/步数/站立/闹钟/日程，最多 4 个等宽横排
+- 两区独立卡片背景与描边；文字按行取色
+- 日程、闹钟按剩余时间黄/红提示紧迫性
 
 ### v1.2
 - 兼容 HyperOS 3 / 4：指纹信号改走 `DozeHost.fireFingerprintPressed`；插件字段与 Doze 亮度超时字段双路径适配。

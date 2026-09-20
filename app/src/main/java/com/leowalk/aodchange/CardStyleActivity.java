@@ -43,7 +43,7 @@ public class CardStyleActivity extends AppCompatActivity {
         addStyleSection(list, "普通通知卡片", CardStyle.P_NOTIF, true, true);
         addStyleSection(list, "焦点通知卡片", CardStyle.P_FOCUS, false, true);
         addSongInfoSection(list);
-        addStyleSection(list, "自定义卡片", CardStyle.P_CUSTOM, false, false);
+        // 自定义文字/组件卡片背景与描边已移至「自定义」设置页，分区域配置
 
         sv.addView(list);
         root.addView(sv, new LinearLayout.LayoutParams(
