@@ -36,10 +36,15 @@ public class NotificationCardHook {
 
     private static final Uri URI = Uri.parse("content://com.leowalk.aodchange.notifications");
     private static FrameLayout sOverlay;
+    /** 业务期望显隐（多行 mask 打开时为 false）；与 ElementSync 条件期望对齐，避免 AOD 同步时闪回 */
+    private static volatile boolean sOverlayWanted = true;
 
     public static void setOverlayVisible(boolean visible) {
+        sOverlayWanted = visible;
         try {
-            if (sOverlay != null) sOverlay.setVisibility(visible ? View.VISIBLE : View.GONE);
+            if (sOverlay != null) {
+                ElementSyncHook.setDesiredVisible(sOverlay, visible);
+            }
         } catch (Exception ignored) {}
     }
     private static String sLastCardsJson;
@@ -92,7 +97,7 @@ public class NotificationCardHook {
         sOverlay.setClipChildren(false); sOverlay.setClipToPadding(false);
         root.addView(sOverlay, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        ElementSyncHook.register(sOverlay);
+        ElementSyncHook.setDesiredVisible(sOverlay, sOverlayWanted);
         int iid = root.getResources().getIdentifier("icons", "id", "com.miui.aod");
         View orig = root.findViewById(iid);
         if (orig != null) orig.setVisibility(View.GONE);

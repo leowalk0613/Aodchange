@@ -4,13 +4,24 @@ import android.view.View;
 
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.WeakHashMap;
 
 import io.github.libxposed.api.XposedInterfaceWrapper;
 
 public class ElementSyncHook {
 
     private static final List<View> sElements = new ArrayList<>();
+    /**
+     * 条件显隐期望值：未放入 map 的视图跟随时钟/AOD；
+     * false = AOD 可见时也保持 GONE（多行 mask / 图标行 / 被遮罩的通知层）；
+     * true  = AOD 可见时显示。
+     * 避免「先 VISIBLE 再纠正」造成闪现。
+     */
+    private static final Map<View, Boolean> sDesiredVisible =
+            Collections.synchronizedMap(new WeakHashMap<>());
     private static volatile boolean sAodVisible = true;
     private static volatile boolean sPaused = false;
     private static volatile boolean sFingerprintPressed = false;
@@ -18,7 +29,7 @@ public class ElementSyncHook {
     private static final List<Runnable> sDeferredWork = new ArrayList<>();
     private static Runnable sOnAodVisible = null;
 
-    /** AOD 从隐藏变为可见后调用：让 LyricHook 重新评估 mask 显隐，避免暂停时残留 */
+    /** AOD 显隐变化后回调（显/隐都会调）：让 LyricHook 等重新评估条件视图 */
     public static void setOnAodVisible(Runnable r) { sOnAodVisible = r; }
 
     /**
@@ -78,6 +89,31 @@ public class ElementSyncHook {
         synchronized (sElements) {
             sElements.remove(v);
         }
+        sDesiredVisible.remove(v);
+    }
+
+    /**
+     * 设置条件视图在「AOD 可见」时是否应显示。
+     * 立刻同步一次，之后 applyVisibility 也不会再强行盖过该期望。
+     */
+    public static void setDesiredVisible(View v, boolean desiredWhenAodOn) {
+        if (v == null) return;
+        register(v);
+        sDesiredVisible.put(v, desiredWhenAodOn);
+        try {
+            applyElement(v, sAodVisible && desiredWhenAodOn);
+        } catch (Throwable ignored) {}
+    }
+
+    /** 清除条件期望，恢复为单纯跟随时钟/AOD */
+    public static void clearDesiredVisible(View v) {
+        if (v == null) return;
+        sDesiredVisible.remove(v);
+    }
+
+    private static boolean resolveShow(View v, boolean aodVisible) {
+        Boolean desired = sDesiredVisible.get(v);
+        return aodVisible && (desired == null || desired);
     }
 
     public static void init(XposedInterfaceWrapper xiw, ClassLoader cl) {
@@ -244,16 +280,13 @@ public class ElementSyncHook {
                 try {
                     if (v == null) continue;
                     if (sPaused) continue;
-                    applyElement(v, visible);
+                    applyElement(v, resolveShow(v, visible));
                 } catch (Throwable t) {
                     android.util.Log.w("AodChange", "ElementSync apply fail", t);
                 }
             }
         }
-        // AOD 变为可见后：通知 LyricHook 重新评估 mask 显隐
-        // applyVisibility(true) 会把所有注册元素设为 VISIBLE，包括 sMask；
-        // 但暂停时 sMask 应为 GONE，此处回调让它立即修正，避免残留
-        if (visible && sOnAodVisible != null) {
+        if (sOnAodVisible != null) {
             try { sOnAodVisible.run(); } catch (Throwable ignored) {}
         }
     }
@@ -266,13 +299,13 @@ public class ElementSyncHook {
             for (View v : sElements) {
                 try {
                     if (v == null) continue;
-                    applyElement(v, visible);
+                    applyElement(v, resolveShow(v, visible));
                 } catch (Throwable t) {
                     android.util.Log.w("AodChange", "ElementSync FP fail", t);
                 }
             }
         }
-        if (visible && sOnAodVisible != null) {
+        if (sOnAodVisible != null) {
             try { sOnAodVisible.run(); } catch (Throwable ignored) {}
         }
     }
@@ -280,13 +313,27 @@ public class ElementSyncHook {
     private static void applyElement(View v, boolean visible) {
         v.animate().cancel();
         if (visible) {
-            v.setVisibility(View.VISIBLE);
-            v.animate().alpha(1f).setDuration(150L).start();
+            if (v.getVisibility() != View.VISIBLE) v.setVisibility(View.VISIBLE);
+            if (v.getAlpha() < 0.99f) {
+                v.animate().alpha(1f).setDuration(150L).start();
+            } else {
+                v.setAlpha(1f);
+            }
         } else {
+            // 条件隐藏：立刻 GONE，避免先淡出一帧造成闪现（多行关闭/遮罩切换）
+            Boolean desired = sDesiredVisible.get(v);
+            if (desired != null && !desired) {
+                v.setAlpha(1f);
+                v.setVisibility(View.GONE);
+                return;
+            }
             v.animate().alpha(0f).setDuration(80L)
                     .withEndAction(() -> {
                         try {
-                            if (!sAodVisible) v.setVisibility(View.GONE);
+                            Boolean d = sDesiredVisible.get(v);
+                            if (!sAodVisible || (d != null && !d)) {
+                                v.setVisibility(View.GONE);
+                            }
                         } catch (Throwable ignored) {}
                     }).start();
         }

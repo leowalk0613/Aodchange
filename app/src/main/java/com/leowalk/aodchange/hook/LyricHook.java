@@ -483,24 +483,39 @@ public class LyricHook {
         int bottomMargin = com.leowalk.aodchange.SettingsHelper.getInt(root.getContext(), "multi_bottom_margin", 165);
         maskLp.bottomMargin = (int)(bottomMargin * d);
         root.addView(sMask, maskLp);
-        ElementSyncHook.register(sMask);
-        ElementSyncHook.register(sNotifIconRow);
-        // AOD 可见后：applyVisibility(true) 把 sMask 设为 VISIBLE，但暂停/无歌词时应为 GONE
-        ElementSyncHook.setOnAodVisible(() -> {
-            if (!sLastMultiActive) {
-                if (sMask != null && sMask.getVisibility() == View.VISIBLE) {
-                    sMask.animate().cancel();
-                    sMask.setVisibility(View.GONE);
-                }
-                if (sNotifIconRow != null && sNotifIconRow.getVisibility() == View.VISIBLE) {
-                    sNotifIconRow.setVisibility(View.GONE);
-                }
-            }
-        });
+        // mask / 图标行：条件显隐（仅多行激活时显示），避免 ElementSync 先 VISIBLE 再纠正闪现
+        ElementSyncHook.setDesiredVisible(sMask, false);
+        ElementSyncHook.setDesiredVisible(sNotifIconRow, false);
+        ElementSyncHook.setOnAodVisible(() -> syncMultiExtrasVisibility());
         android.util.Log.i("AodChange", "setupMask d=" + d + " topMargin=" + maskLp.topMargin
                 + " bottomMargin=" + maskLp.bottomMargin
                 + " rootH=" + root.getHeight() + " rootW=" + root.getWidth()
                 + " screenH=" + root.getResources().getDisplayMetrics().heightPixels);
+    }
+
+    /** 多行附属层显隐与 ElementSync 期望对齐 */
+    private static void syncMultiExtrasVisibility() {
+        try {
+            boolean aodOn = ElementSyncHook.isAodVisible();
+            boolean multiOn = aodOn && sLastMultiActive;
+            ElementSyncHook.setDesiredVisible(sMask, multiOn);
+            boolean icons = multiOn && sRoot != null
+                    && com.leowalk.aodchange.SettingsHelper.get(sRoot.getContext(), "multi_line", false)
+                    && com.leowalk.aodchange.SettingsHelper.get(sRoot.getContext(), "multi_show_notif_icons", false);
+            if (icons) {
+                updateNotifIconRow();
+            } else {
+                hideNotifIconRow();
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    private static void hideNotifIconRow() {
+        if (sNotifIconRow == null) return;
+        try {
+            ElementSyncHook.setDesiredVisible(sNotifIconRow, false);
+            sNotifIconKey = "";
+        } catch (Throwable ignored) {}
     }
 
     private static int resolveAccentColor(android.content.Context ctx, int albumColor) {
@@ -1013,6 +1028,12 @@ public class LyricHook {
             // 无歌词文本(noLyric)时仅前奏(idx<0)激活，避免残留旧歌词 ctx 的文字残留
             boolean multiActive = multiLineEnabled && ctx != null && playing && matchSong
                     && (!noLyric || ctx.optInt("idx", -1) < 0);
+            if (sLastMultiActive && !multiActive) {
+                // 关闭多行瞬间立刻收起 mask / 底部图标行，不等下一轮 ElementSync
+                ElementSyncHook.setDesiredVisible(sMask, false);
+                hideNotifIconRow();
+                NotificationCardHook.setOverlayVisible(true);
+            }
             sLastMultiActive = multiActive;
 
             // 切歌检测：歌曲变化时强制重建（重置缓存索引并清空多行列表，
@@ -1549,18 +1570,16 @@ public class LyricHook {
                 if (sMask == null) return;
             }
             if (!active || ctx == null) {
-                if (sMask.getVisibility() != View.GONE) {
-                    sMask.setVisibility(View.GONE);
-                    NotificationCardHook.setOverlayVisible(true);
-                }
-                if (sNotifIconRow != null) sNotifIconRow.setVisibility(View.GONE);
+                ElementSyncHook.setDesiredVisible(sMask, false);
+                NotificationCardHook.setOverlayVisible(true);
+                hideNotifIconRow();
                 return;
             }
             org.json.JSONArray lines = ctx.optJSONArray("lines");
             if (lines == null) {
-                sMask.setVisibility(View.GONE);
+                ElementSyncHook.setDesiredVisible(sMask, false);
                 NotificationCardHook.setOverlayVisible(true);
-                if (sNotifIconRow != null) sNotifIconRow.setVisibility(View.GONE);
+                hideNotifIconRow();
                 return;
             }
             if (sContainer != null && sContainer.getBottom() > 0) {
@@ -1586,7 +1605,7 @@ public class LyricHook {
             boolean hasRows = sMultiLine != null && sMultiLine.getChildCount() > 0;
             if (ctxIdx == sLastCtxIdx && hasRows) {
                 if (com.leowalk.aodchange.hook.ElementSyncHook.isAodVisible()) {
-                    sMask.setVisibility(View.VISIBLE);
+                    ElementSyncHook.setDesiredVisible(sMask, true);
                     NotificationCardHook.setOverlayVisible(false);
                 }
                 // 前奏中：三点自驱动动画，无需外部刷新进度
@@ -1761,7 +1780,7 @@ public class LyricHook {
             });
 
             if (com.leowalk.aodchange.hook.ElementSyncHook.isAodVisible()) {
-                sMask.setVisibility(View.VISIBLE);
+                ElementSyncHook.setDesiredVisible(sMask, true);
                 NotificationCardHook.setOverlayVisible(false);
             }
         } catch (Throwable t) {
@@ -1907,11 +1926,15 @@ public class LyricHook {
 
     private static void updateNotifIconRow() {
         try {
-            if (sNotifIconRow == null) return;
-            boolean enabled = com.leowalk.aodchange.SettingsHelper.get(sRoot.getContext(), "multi_show_notif_icons", false);
+            if (sNotifIconRow == null || sRoot == null) return;
+            // 仅多行模式 + 开关开启 + AOD 可见时显示；关闭多行切双行时绝不再设 VISIBLE
+            boolean multiOn = com.leowalk.aodchange.SettingsHelper.get(sRoot.getContext(), "multi_line", false);
+            boolean enabled = multiOn
+                    && com.leowalk.aodchange.SettingsHelper.get(sRoot.getContext(), "multi_show_notif_icons", false)
+                    && sLastMultiActive
+                    && ElementSyncHook.isAodVisible();
             if (!enabled) {
-                sNotifIconRow.setVisibility(View.GONE);
-                sNotifIconKey = "";
+                hideNotifIconRow();
                 return;
             }
             String json = readProvider("get");
@@ -1920,14 +1943,14 @@ public class LyricHook {
                     + com.leowalk.aodchange.SettingsHelper.getInt(sRoot.getContext(), "multi_bottom_margin", 165)
                     + "|" + com.leowalk.aodchange.SettingsHelper.getString(sRoot.getContext(), "multi_icon_row_gravity", "left");
             if (key.equals(sNotifIconKey) && sNotifIconRow.getChildCount() > 0) {
-                if (sNotifIconRow.getVisibility() != View.VISIBLE) sNotifIconRow.setVisibility(View.VISIBLE);
+                ElementSyncHook.setDesiredVisible(sNotifIconRow, true);
                 return;
             }
             sNotifIconKey = key;
             java.util.List<org.json.JSONObject> notifs = new java.util.ArrayList<>();
             if (!json.isEmpty() && !"[]".equals(json)) {
                 org.json.JSONArray arr = new org.json.JSONArray(json);
-                // 排序：priority 高优先，其次最新（pt 大优先）�?第一个即最重要最�?
+                // 排序：priority 高优先，其次最新（pt 大优先）；第一个即最重要最新
                 java.util.List<org.json.JSONObject> all = new java.util.ArrayList<>();
                 for (int i = 0; i < arr.length(); i++) {
                     org.json.JSONObject o = arr.optJSONObject(i);
@@ -1952,10 +1975,10 @@ public class LyricHook {
             sNotifIconRow.removeAllViews();
             float d = sRoot.getResources().getDisplayMetrics().density;
             if (notifs.isEmpty()) {
-                sNotifIconRow.setVisibility(View.GONE);
+                hideNotifIconRow();
                 return;
             }
-            // 第一个通知：图�?+ 主标题（最重要最新，标题过长省略号）
+            // 第一个通知：图标 + 主标题（最重要最新，标题过长省略号）
             org.json.JSONObject first = notifs.get(0);
             String firstPkg = first.optString("p", "");
             String firstTitle = first.optString("t", "");
@@ -1977,13 +2000,13 @@ public class LyricHook {
                 tv.setSingleLine(true);
                 tv.setEllipsize(TextUtils.TruncateAt.END);
                 tv.setIncludeFontPadding(false);
-                tv.setMaxWidth((int)(180 * d)); // 太长省略�?
+                tv.setMaxWidth((int)(180 * d));
                 LinearLayout.LayoutParams tvlp = new LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                tvlp.rightMargin = (int)(12 * d); // 与后续图标保持距�?
+                tvlp.rightMargin = (int)(12 * d);
                 sNotifIconRow.addView(tv, tvlp);
             }
-            // 后面最�?个纯图标
+            // 后面最多几个纯图标
             for (int i = 1; i < notifs.size(); i++) {
                 String pkg = notifs.get(i).optString("p", "");
                 try {
@@ -1996,28 +2019,24 @@ public class LyricHook {
                     sNotifIconRow.addView(iv, vlp);
                 } catch (Throwable ignored) {}
             }
-            // 带背景圆角容器（线框风格�?
             android.graphics.drawable.GradientDrawable bg = new android.graphics.drawable.GradientDrawable();
             bg.setColor(android.graphics.Color.argb(20, 255, 255, 255));
             bg.setStroke((int)(1 * d), android.graphics.Color.argb(60, 255, 255, 255));
             bg.setCornerRadius(12 * d);
             sNotifIconRow.setPadding((int)(10*d), (int)(5*d), (int)(10*d), (int)(5*d));
             sNotifIconRow.setBackground(bg);
-            sNotifIconRow.setVisibility(View.VISIBLE);
-            // 定位�?sMask 下沿之下
-            if (sNotifIconRow.getVisibility() == View.VISIBLE) {
-                int rootH = sRoot.getHeight();
-                if (rootH <= 0) rootH = sRoot.getResources().getDisplayMetrics().heightPixels;
-                int bm = com.leowalk.aodchange.SettingsHelper.getInt(sRoot.getContext(), "multi_bottom_margin", 165);
-                String iga = com.leowalk.aodchange.SettingsHelper.getString(sRoot.getContext(), "multi_icon_row_gravity", "left");
-                int igaGrav = "center".equals(iga) ? Gravity.CENTER_HORIZONTAL
-                        : "right".equals(iga) ? Gravity.RIGHT : Gravity.LEFT;
-                FrameLayout.LayoutParams nirp = (FrameLayout.LayoutParams) sNotifIconRow.getLayoutParams();
-                nirp.gravity = Gravity.TOP | igaGrav;
-                nirp.topMargin = rootH - (int)(bm * d) + (int)(8 * d);
-                nirp.leftMargin = igaGrav == Gravity.LEFT ? (int)(30 * d) : 0;
-                sNotifIconRow.setLayoutParams(nirp);
-            }
+            ElementSyncHook.setDesiredVisible(sNotifIconRow, true);
+            int rootH = sRoot.getHeight();
+            if (rootH <= 0) rootH = sRoot.getResources().getDisplayMetrics().heightPixels;
+            int bm = com.leowalk.aodchange.SettingsHelper.getInt(sRoot.getContext(), "multi_bottom_margin", 165);
+            String iga = com.leowalk.aodchange.SettingsHelper.getString(sRoot.getContext(), "multi_icon_row_gravity", "left");
+            int igaGrav = "center".equals(iga) ? Gravity.CENTER_HORIZONTAL
+                    : "right".equals(iga) ? Gravity.RIGHT : Gravity.LEFT;
+            FrameLayout.LayoutParams nirp = (FrameLayout.LayoutParams) sNotifIconRow.getLayoutParams();
+            nirp.gravity = Gravity.TOP | igaGrav;
+            nirp.topMargin = rootH - (int)(bm * d) + (int)(8 * d);
+            nirp.leftMargin = igaGrav == Gravity.LEFT ? (int)(30 * d) : 0;
+            sNotifIconRow.setLayoutParams(nirp);
         } catch (Throwable t) {
             android.util.Log.w("AodChange", "updateNotifIconRow fail", t);
         }
@@ -2030,8 +2049,9 @@ public class LyricHook {
             v.setVisibility(View.GONE);
         }
         if (sSongRow != null) sSongRow.setVisibility(View.GONE);
-        if (sMask != null) sMask.setVisibility(View.GONE);
-        // sContainer 显隐�?ElementSyncHook 跟随时钟控制，这里不强制显示
+        ElementSyncHook.setDesiredVisible(sMask, false);
+        hideNotifIconRow();
+        // sContainer 显隐由 ElementSyncHook 跟随时钟控制，这里不强制显示
     }
 
     public static void fadeOutMedia() {
