@@ -14,6 +14,7 @@ import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewTreeObserver;
 import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -46,6 +47,9 @@ public class LyricHook {
     private static TextView sSubLyric;
     private static IntroDotsView sIntroDots;
     private static ViewGroup sRoot;
+    private static View sClockView;
+    private static ViewTreeObserver.OnPreDrawListener sClockPreDraw;
+    private static int sLastFollowTop = Integer.MIN_VALUE;
     private static int sAccentColor = Color.WHITE;
     private static int sMonetColor2 = Color.WHITE;
     private static int sMonetInfoColor1 = Color.WHITE;
@@ -332,8 +336,104 @@ public class LyricHook {
         flp.rightMargin = (int)(30*d);
         root.addView(sContainer, flp);
         ElementSyncHook.register(sContainer);
+        // 音乐控件+自定义控件区域改为跟随时钟底部动态对齐（不再用固定 280dp）
+        setupClockFollow(root);
         CustomContentHook.setup(root, sContainer);
         setupMask(root);
+    }
+
+    /** PositionFreezeHook / 外部在时钟 translation 变化后调用，立即重对齐自定义区域 */
+    public static void onClockPositionChanged() {
+        try {
+            new Handler(Looper.getMainLooper()).post(() -> {
+                try { syncFollowClock(); } catch (Throwable ignored) {}
+            });
+        } catch (Throwable ignored) {}
+    }
+
+    /** 绑定时钟容器，音乐控件/自定义控件区域贴在其底部下方，随时钟位置同步刷新 */
+    private static void setupClockFollow(ViewGroup root) {
+        try {
+            sRoot = root;
+            detachClockFollow();
+            sClockView = null;
+            sLastFollowTop = Integer.MIN_VALUE;
+            Class<?> rid = Class.forName("com.miui.aod.R$id");
+            int clockId = rid.getField("clock_container").getInt(null);
+            View clock = root.findViewById(clockId);
+            if (clock == null) return;
+            sClockView = clock;
+            View.OnLayoutChangeListener l = (v, l2, t, r, b, ol, ot, or, ob) -> {
+                try { syncFollowClock(); } catch (Throwable ignored) {}
+            };
+            clock.addOnLayoutChangeListener(l);
+            root.addOnLayoutChangeListener(l);
+            // translationY 变化不触发 layout：用 OnPreDraw 每帧比对底部，保证 doze 后仍贴齐
+            sClockPreDraw = () -> {
+                try { syncFollowClock(); } catch (Throwable ignored) {}
+                return true;
+            };
+            clock.getViewTreeObserver().addOnPreDrawListener(sClockPreDraw);
+            syncFollowClock();
+        } catch (Throwable t) {
+            android.util.Log.w("AodChange", "setupClockFollow fail", t);
+        }
+    }
+
+    private static void detachClockFollow() {
+        try {
+            if (sClockView != null && sClockPreDraw != null) {
+                ViewTreeObserver obs = sClockView.getViewTreeObserver();
+                if (obs.isAlive()) obs.removeOnPreDrawListener(sClockPreDraw);
+            }
+        } catch (Throwable ignored) {}
+        sClockPreDraw = null;
+    }
+
+    /** 将 sContainer 上沿对齐到时钟容器底部（+12dp 间距），含 translationY */
+    private static void syncFollowClock() {
+        if (sContainer == null || sRoot == null || sClockView == null) return;
+        try {
+            if (sClockView.getWidth() <= 0 && sClockView.getHeight() <= 0) return;
+            FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) sContainer.getLayoutParams();
+            if (lp == null) return;
+            float d = sRoot.getResources().getDisplayMetrics().density;
+            int target = clockBottomRelativeToRoot() + (int) (12 * d);
+            if (target < 0) target = 0;
+            if (target == sLastFollowTop && lp.topMargin == target) return;
+            sLastFollowTop = target;
+            if (lp.topMargin != target) {
+                lp.topMargin = target;
+                // 避免在 OnPreDraw 中同步 requestLayout 造成循环
+                final FrameLayout.LayoutParams out = lp;
+                sContainer.post(() -> {
+                    try {
+                        if (sContainer != null) sContainer.setLayoutParams(out);
+                    } catch (Throwable ignored) {}
+                });
+            }
+        } catch (Throwable ignored) {}
+    }
+
+    /**
+     * 时钟容器相对 sRoot 的视觉底部 Y。
+     * getLocationInWindow 已含 translation；再加 measured/height，避免 doze 后只移 translation 时算错。
+     */
+    private static int clockBottomRelativeToRoot() {
+        try {
+            if (sClockView == null) return 0;
+            int[] root = new int[2];
+            sRoot.getLocationInWindow(root);
+            int[] clock = new int[2];
+            sClockView.getLocationInWindow(clock);
+            int h = sClockView.getHeight();
+            if (h <= 0) h = sClockView.getMeasuredHeight();
+            return clock[1] - root[1] + h;
+        } catch (Throwable t) {
+            if (sClockView == null) return 0;
+            // fallback：layout bottom + translationY
+            return sClockView.getBottom() + Math.round(sClockView.getTranslationY());
+        }
     }
 
     private static void setupMask(ViewGroup root) {
@@ -626,6 +726,8 @@ public class LyricHook {
     private static void readAndUpdate() {
         try {
             if (sRoot == null) return;
+            // 时钟跟随很轻量：即使亮屏/指纹过渡也对齐，避免 doze 瞬间自定义区盖住时钟
+            try { syncFollowClock(); } catch (Throwable ignored) {}
             // 屏幕点亮（解锁/亮屏）或指纹按压中跳过重活，避免与解锁关键路径竞争导致卡顿
             android.os.PowerManager pm = (android.os.PowerManager) sRoot.getContext()
                     .getSystemService(android.content.Context.POWER_SERVICE);

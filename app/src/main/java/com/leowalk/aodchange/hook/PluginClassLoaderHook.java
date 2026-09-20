@@ -49,7 +49,9 @@ public class PluginClassLoaderHook {
     private static void installHooks(XposedInterfaceWrapper xiw, ClassLoader aodCl) {
         android.util.Log.i("AodChange", "installHooks called, cl=" + aodCl);
         try { ElementSyncHook.init(xiw, aodCl); } catch (Throwable t) { android.util.Log.w("AodChange", "ElementSync init err", t); }
-        try { PositionFreezeHook.init(xiw, aodCl); } catch (Throwable ignored) {}
+        try { PositionFreezeHook.init(xiw, aodCl); } catch (Throwable t) {
+            android.util.Log.w("AodChange", "PositionFreeze init err", t);
+        }
         try { FocusRowHook.init(xiw, aodCl); } catch (Throwable ignored) {}
         try { BatteryRepositionHook.init(xiw, aodCl); } catch (Throwable ignored) {}
         try { TimeTickHook.init(xiw, aodCl); } catch (Throwable ignored) {}
